@@ -1,16 +1,29 @@
 # Compute Job Ledger
 
-A local compute scheduler for answering who submitted a job, which worker ran it, and whether its recorded history still verifies. The first milestone is a deterministic Go workload. The scheduler and verification features below are planned.
+A local compute scheduler for answering who submitted a job, which worker ran it, and whether its recorded history still verifies. The deterministic Go workload and PostgreSQL development schema are available. Job submission is the next milestone.
 
 ## First workload
 
 Run `go run ./cmd/ledger risk -seed 42 -trials 1000` with Go 1.22 or later. Each synthetic trial has a 5% chance of a loss. The command prints the input and loss count as JSON. Run `go test ./...` to check repeatability and input limits.
 
+## Development database
+
+With Docker Compose installed, set `LEDGER_DB_PASSWORD` to a local development password in your shell. PostgreSQL 16 listens on loopback port 5432. Set `LEDGER_DB_PORT` to choose another port. From the repository root in Bash:
+
+```sh
+docker compose up -d --wait db
+docker compose exec -T db psql -X -U ledger -d ledger < db/migrations/001_jobs.sql
+docker compose exec -T db psql -X -U ledger -d ledger -c '\d public.jobs'
+docker compose down
+```
+
+The named volume retains data between restarts. The migration records its version in the same transaction that creates the jobs table. Running it again preserves existing rows. CI applies it twice against a fresh service and checks that invalid trial counts and duplicate request IDs are rejected.
+
 ## Week-one milestones
 
 Implement these in dependency order, keeping each change and its focused tests together.
 
-1. PostgreSQL development service with Compose, migrations and integration-test setup.
+1. **Complete.** PostgreSQL development service with Compose, migrations and integration-test setup.
 2. Persist submissions with stable input hashes and idempotent request IDs.
 3. Bind a local caller credential to a role. Record both authorized submissions and denials.
 4. Claim a queued job transactionally with a worker lease.
