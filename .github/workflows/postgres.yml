@@ -1,0 +1,40 @@
+name: Verify PostgreSQL
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start a fresh database
+        run: |
+          echo "LEDGER_DB_PASSWORD=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - run: docker compose up -d --wait db
+      - name: Apply migration, insert a job and verify replay preserves it
+        shell: bash
+        run: |
+          psql_db() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U ledger -d ledger "$@"; }
+          psql_db < db/migrations/001_jobs.sql
+          psql_db -c "INSERT INTO jobs (request_id,input_hash,seed,trials) VALUES ('smoke',decode(repeat('ab',32),'hex'),42,1000)"
+          psql_db < db/migrations/001_jobs.sql
+          test "$(psql_db -Atc 'SELECT version FROM schema_migrations')" = 1
+          test "$(psql_db -Atc "SELECT trials FROM jobs WHERE request_id='smoke'")" = 1000
+          psql_db <<'SQL'
+          DO $$
+          BEGIN
+            BEGIN
+              UPDATE jobs SET trials = 0 WHERE request_id = 'smoke';
+              RAISE EXCEPTION 'invalid trial count accepted';
+            EXCEPTION WHEN check_violation THEN NULL;
+            END;
+            BEGIN
+              INSERT INTO jobs (request_id,input_hash,seed,trials)
+                SELECT request_id,input_hash,seed,trials FROM jobs;
+              RAISE EXCEPTION 'duplicate request accepted';
+            EXCEPTION WHEN unique_violation THEN NULL;
+            END;
+          END $$;
+          SQL
+      - if: always()
+        run: docker compose down -v
