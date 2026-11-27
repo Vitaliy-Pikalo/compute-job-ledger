@@ -98,5 +98,18 @@ jobs:
           test "$(psql_db -Atc "SELECT count(*) FROM submission_decisions d JOIN jobs j ON d.job_id=j.id WHERE d.login=j.submitted_by AND d.role='researcher' AND d.outcome='accepted' AND j.request_id='concurrent'")" = 17
           test "$(psql_db -Atc "SELECT count(*) FROM submission_decisions WHERE login='researcher' AND outcome='conflict'")" = 2
           test "$(psql_db -Atc "SELECT has_table_privilege('viewer','public.jobs','INSERT') OR has_table_privilege('researcher','public.callers','UPDATE')")" = f
+      - name: Verify caller isolation and rollback on audit failure
+        run: |
+          psql_db() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U ledger -d ledger "$@"; }
+          psql_db -c "INSERT INTO callers(login,role) VALUES('viewer','researcher')"
+          rc=0
+          LEDGER_DATABASE_URL="$viewer_url" "$RUNNER_TEMP/ledger" submit -request-id concurrent -seed -12 -trials 500 || rc=$?
+          test "$rc" = 3
+          test "$(psql_db -Atc "SELECT count(*) FROM submission_decisions WHERE login='viewer' AND outcome='conflict' AND job_id IS NULL")" = 1
+          psql_db -c "ALTER TABLE submission_decisions ADD CHECK (request_id <> 'audit-failure')"
+          rc=0
+          LEDGER_DATABASE_URL="$researcher_url" "$RUNNER_TEMP/ledger" submit -request-id audit-failure || rc=$?
+          test "$rc" = 1
+          test "$(psql_db -Atc "SELECT count(*) FROM jobs WHERE request_id='audit-failure'")" = 0
       - if: always()
         run: docker compose down -v
