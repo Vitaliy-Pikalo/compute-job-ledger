@@ -1,6 +1,6 @@
 # Compute Job Ledger
 
-A local compute scheduler for answering who submitted a job, which worker ran it, and whether its recorded history still verifies. The deterministic Go workload and PostgreSQL development schema are available. Job submission is the next milestone.
+A local compute scheduler for answering who submitted a job, which worker ran it, and whether its recorded history still verifies. The CLI runs deterministic workloads and persists retry-safe job submissions to PostgreSQL. Caller authorization is the next milestone.
 
 ## First workload
 
@@ -19,12 +19,25 @@ docker compose down
 
 The named volume retains data between restarts. The migration records its version in the same transaction that creates the jobs table. Running it again preserves existing rows. CI applies it twice against a fresh service and checks that invalid trial counts and duplicate request IDs are rejected.
 
+## Submit a job
+
+Start the database and apply migration 001 above. Leave the database running. Set `LEDGER_DATABASE_URL` to its PostgreSQL connection string, for example `postgres://ledger:<url-encoded-password>@127.0.0.1:5432/ledger?sslmode=disable` for local Compose.
+
+```sh
+go build -o ledger ./cmd/ledger
+./ledger submit -request-id demo-001 -seed 42 -trials 1000
+```
+
+Expect a JSON object containing the database-assigned `job_id`. An identical retry returns the original ID, including when callers race. Changing the seed or trial count under the same request ID exits with status 3 and preserves the original job. Use a new request ID to submit another job with identical inputs. Submission stores the request for a future worker.
+
+The input digest is SHA-256 of the ASCII text `risk/v1\n<seed>\n<trials>\n`, with decimal integers and LF separators. Request IDs are independent of this digest.
+
 ## Week-one milestones
 
 Implement these in dependency order, keeping each change and its focused tests together.
 
 1. **Complete.** PostgreSQL development service with Compose, migrations and integration-test setup.
-2. Persist submissions with stable input hashes and idempotent request IDs.
+2. **Complete.** Persist submissions with stable input hashes and idempotent request IDs.
 3. Bind a local caller credential to a role. Record both authorized submissions and denials.
 4. Claim a queued job transactionally with a worker lease.
 5. Reclaim expired leases and reject stale worker tokens.
