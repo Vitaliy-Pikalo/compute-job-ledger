@@ -36,13 +36,30 @@ jobs:
             END;
           END $$;
           SQL
+      - name: Migrate existing jobs and provision isolated caller credentials
+        run: |
+          psql_db() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U ledger -d ledger "$@"; }
+          psql_db < db/migrations/002_callers.sql
+          psql_db < db/migrations/002_callers.sql
+          test "$(psql_db -Atc "SELECT count(*) FROM jobs WHERE request_id='smoke' AND submitted_by IS NULL")" = 1
+          for login in researcher viewer; do
+            password=$(openssl rand -hex 32)
+            echo "::add-mask::$password"
+            docker compose exec -T -e CALLER_PASSWORD="$password" db psql -X -v ON_ERROR_STOP=1 -v login="$login" -U ledger -d ledger <<'SQL'
+          \getenv password CALLER_PASSWORD
+          CREATE ROLE :"login" LOGIN PASSWORD :'password';
+          GRANT EXECUTE ON FUNCTION public.submit_risk(text,bigint,integer) TO :"login";
+          INSERT INTO public.callers(login,role) VALUES (:'login', :'login');
+          SQL
+            echo "${login}_url=postgres://$login:$password@127.0.0.1:5432/ledger?sslmode=disable" >> "$GITHUB_ENV"
+          done
       - uses: actions/setup-go@v5
         with:
           go-version: stable
       - name: Retry concurrent CLI submissions and reject conflicting inputs
         shell: bash
         run: |
-          export LEDGER_DATABASE_URL="postgres://ledger:$LEDGER_DB_PASSWORD@127.0.0.1:5432/ledger?sslmode=disable"
+          export LEDGER_DATABASE_URL="$researcher_url"
           go build -o "$RUNNER_TEMP/ledger" ./cmd/ledger
           cd "$RUNNER_TEMP"
           pids=()
@@ -63,5 +80,23 @@ jobs:
           test "$(jq .job_id other.json)" != "$(jq .job_id result-1.json)"
           cd "$GITHUB_WORKSPACE"
           test "$(docker compose exec -T db psql -XAt -U ledger -d ledger -c "SELECT count(*) FROM jobs WHERE request_id='concurrent'")" = 1
+      - name: Verify authorization decisions and attribution
+        run: |
+          psql_db() { docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U ledger -d ledger "$@"; }
+          for key in concurrent denied-only; do
+            rc=0
+            LEDGER_DATABASE_URL="$viewer_url" "$RUNNER_TEMP/ledger" submit -request-id "$key" || rc=$?
+            test "$rc" = 4
+          done
+          psql_db -c "DELETE FROM callers WHERE login='viewer'"
+          rc=0
+          LEDGER_DATABASE_URL="$viewer_url" "$RUNNER_TEMP/ledger" submit -request-id unmapped || rc=$?
+          test "$rc" = 4
+          test "$(psql_db -Atc "SELECT count(*) FROM submission_decisions WHERE login='viewer' AND outcome='denied' AND role='viewer'")" = 2
+          test "$(psql_db -Atc "SELECT count(*) FROM submission_decisions WHERE login='viewer' AND outcome='denied' AND role IS NULL")" = 1
+          test "$(psql_db -Atc "SELECT count(*) FROM jobs WHERE request_id IN ('denied-only','unmapped')")" = 0
+          test "$(psql_db -Atc "SELECT count(*) FROM submission_decisions d JOIN jobs j ON d.job_id=j.id WHERE d.login=j.submitted_by AND d.role='researcher' AND d.outcome='accepted' AND j.request_id='concurrent'")" = 17
+          test "$(psql_db -Atc "SELECT count(*) FROM submission_decisions WHERE login='researcher' AND outcome='conflict'")" = 2
+          test "$(psql_db -Atc "SELECT has_table_privilege('viewer','public.jobs','INSERT') OR has_table_privilege('researcher','public.callers','UPDATE')")" = f
       - if: always()
         run: docker compose down -v

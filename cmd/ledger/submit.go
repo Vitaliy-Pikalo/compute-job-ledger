@@ -45,6 +45,10 @@ func submit(args []string, out, diagnostics io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	id, err := jobs.Submit(ctx, db, *key, *seed, *trials)
+	if errors.Is(err, jobs.ErrDenied) {
+		fmt.Fprintln(diagnostics, err)
+		return 4
+	}
 	if errors.Is(err, jobs.ErrConflict) {
 		fmt.Fprintln(diagnostics, err)
 		return 3
