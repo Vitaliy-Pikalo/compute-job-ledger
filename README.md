@@ -1,6 +1,6 @@
 # Compute Job Ledger
 
-A local compute scheduler for answering who submitted a job, which worker ran it, and whether its recorded history still verifies. The CLI runs deterministic workloads and persists retry-safe job submissions to PostgreSQL. Caller authorization is the next milestone.
+A local compute scheduler for answering who submitted a job, which worker ran it, and whether its recorded history still verifies. The CLI runs deterministic workloads and persists retry-safe job submissions to PostgreSQL. PostgreSQL binds each submission to its authenticated caller and records the decision. Worker leases are the next milestone.
 
 ## First workload
 
@@ -14,14 +14,31 @@ With Docker Compose installed, set `LEDGER_DB_PASSWORD` to a local development p
 docker compose up -d --wait db
 docker compose exec -T db psql -X -U ledger -d ledger < db/migrations/001_jobs.sql
 docker compose exec -T db psql -X -U ledger -d ledger -c '\d public.jobs'
-docker compose down
+docker compose exec -T db psql -X -U ledger -d ledger < db/migrations/002_callers.sql
 ```
 
 The named volume retains data between restarts. The migration records its version in the same transaction that creates the jobs table. Running it again preserves existing rows. CI applies it twice against a fresh service and checks that invalid trial counts and duplicate request IDs are rejected.
 
+## Configure a local caller
+
+The local development database uses PostgreSQL password authentication. As the ledger database administrator, open `docker compose exec db psql -X -U ledger -d ledger` and provision a dedicated login for the CLI:
+
+```sql
+CREATE ROLE alice LOGIN;
+\password alice
+GRANT EXECUTE ON FUNCTION public.submit_risk(text,bigint,integer) TO alice;
+INSERT INTO public.callers(login,role) VALUES ('alice','researcher');
+```
+
+Use the password prompt to set a unique secret. Use `viewer` for a caller who may reach the submission endpoint but cannot submit. Give callers only the function grant. The database owner controls login provisioning and the role mapping.
+
+The function reads the authenticated login from PostgreSQL. A successful submission records its caller, role, request ID and job ID atomically with the job. Viewer and unmapped CLI submissions exit with status 4 and persist a denial. Request IDs remain globally unique. A retry must match both the original owner and inputs. Jobs created before migration 002 retain an unknown owner and reserve their original request IDs.
+
+The decision table covers completed CLI submission attempts. Connection failures, malformed CLI arguments and manually rolled-back SQL transactions fall outside that history. An administrator can modify the table; signed verification is planned for later milestones.
+
 ## Submit a job
 
-Start the database and apply migration 001 above. Leave the database running. Set `LEDGER_DATABASE_URL` to its PostgreSQL connection string, for example `postgres://ledger:<url-encoded-password>@127.0.0.1:5432/ledger?sslmode=disable` for local Compose.
+Start the database, apply migrations 001 and 002, and provision a caller above. Leave the database running. Set `LEDGER_DATABASE_URL` to its PostgreSQL connection string, for example `postgres://alice:<url-encoded-password>@127.0.0.1:5432/ledger?sslmode=disable` for local Compose.
 
 ```sh
 go build -o ledger ./cmd/ledger
@@ -38,7 +55,7 @@ Implement these in dependency order, keeping each change and its focused tests t
 
 1. **Complete.** PostgreSQL development service with Compose, migrations and integration-test setup.
 2. **Complete.** Persist submissions with stable input hashes and idempotent request IDs.
-3. Bind a local caller credential to a role. Record both authorized submissions and denials.
+3. **Complete.** Bind a local caller credential to a role. Record both authorized submissions and denials.
 4. Claim a queued job transactionally with a worker lease.
 5. Reclaim expired leases and reject stale worker tokens.
 6. Execute the risk workload in a worker and record attempt identity.
