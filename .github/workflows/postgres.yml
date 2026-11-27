@@ -36,5 +36,32 @@ jobs:
             END;
           END $$;
           SQL
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Retry concurrent CLI submissions and reject conflicting inputs
+        shell: bash
+        run: |
+          export LEDGER_DATABASE_URL="postgres://ledger:$LEDGER_DB_PASSWORD@127.0.0.1:5432/ledger?sslmode=disable"
+          go build -o "$RUNNER_TEMP/ledger" ./cmd/ledger
+          cd "$RUNNER_TEMP"
+          pids=()
+          for i in {1..16}; do
+            ./ledger submit -request-id concurrent -seed -12 -trials 500 > "result-$i.json" &
+            pids+=("$!")
+          done
+          for pid in "${pids[@]}"; do wait "$pid"; done
+          jq -e '.job_id > 0' result-1.json
+          for i in {2..16}; do cmp result-1.json "result-$i.json"; done
+          for args in '-seed -11 -trials 500' '-seed -12 -trials 501'; do
+            rc=0
+            ./ledger submit -request-id concurrent $args || rc=$?
+            test "$rc" = 3
+          done
+          ./ledger submit -request-id concurrent -seed -12 -trials 500 | cmp result-1.json -
+          ./ledger submit -request-id independent -seed -12 -trials 500 > other.json
+          test "$(jq .job_id other.json)" != "$(jq .job_id result-1.json)"
+          cd "$GITHUB_WORKSPACE"
+          test "$(docker compose exec -T db psql -XAt -U ledger -d ledger -c "SELECT count(*) FROM jobs WHERE request_id='concurrent'")" = 1
       - if: always()
         run: docker compose down -v
