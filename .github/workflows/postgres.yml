@@ -75,6 +75,38 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+      - name: Race two worker logins for one queued job
+        shell: bash
+        run: |
+          go build -o "$RUNNER_TEMP/claim-ledger" ./cmd/ledger
+          for worker in worker_a worker_b; do
+            password=$(openssl rand -hex 32)
+            echo "::add-mask::$password"
+            docker compose exec -T -e WORKER_PASSWORD="$password" db psql -X -v ON_ERROR_STOP=1 -v login="$worker" -U ledger -d ledger <<'SQL'
+          \getenv password WORKER_PASSWORD
+          CREATE ROLE :"login" LOGIN PASSWORD :'password';
+          GRANT EXECUTE ON FUNCTION public.claim_job() TO :"login";
+          SQL
+            printf -v "${worker}_url" 'postgres://%s:%s@127.0.0.1:5432/ledger?sslmode=disable' "$worker" "$password"
+          done
+          rc=0
+          LEDGER_DATABASE_URL="$researcher_url" "$RUNNER_TEMP/claim-ledger" claim >/dev/null || rc=$?
+          test "$rc" = 4
+          pids=()
+          for i in {1..16}; do
+            if (( i % 2 )); then worker=worker_a; else worker=worker_b; fi
+            url_var="${worker}_url"
+            LEDGER_DATABASE_URL="${!url_var}" "$RUNNER_TEMP/claim-ledger" claim > "$RUNNER_TEMP/claim-$worker-$i.json" &
+            pids+=("$!")
+          done
+          for pid in "${pids[@]}"; do wait "$pid"; done
+          files=("$RUNNER_TEMP"/claim-worker*.json)
+          jq -se 'length == 16 and (map(select(. != null)) | length == 1)' "${files[@]}" >/dev/null
+          winner=$(jq -r 'select(. != null) | input_filename' "${files[@]}")
+          owner=$(basename "$winner" | cut -d- -f2)
+          expected=$(docker compose exec -T db psql -XAt -U ledger -d ledger -c "SELECT id || '|' || lease_owner || '|' || lease_token FROM jobs WHERE request_id='smoke'")
+          test "$expected" = "$(jq -r --arg owner "$owner" '[.job_id,$owner,.lease_token] | join("|")' "$winner")"
+          jq -e '.seed == 42 and .trials == 1000 and (.expires_at | type == "string")' "$winner" >/dev/null
       - name: Retry concurrent CLI submissions and reject conflicting inputs
         shell: bash
         run: |
