@@ -46,7 +46,7 @@ jobs:
           psql_db < db/migrations/003_claim.sql
           psql_db <<'SQL'
           BEGIN;
-          DO $
+          DO $$
           DECLARE claimed record;
           BEGIN
             SELECT * INTO STRICT claimed FROM public.claim_job();
@@ -57,7 +57,7 @@ jobs:
             IF EXISTS (SELECT FROM public.claim_job()) THEN
               RAISE EXCEPTION 'same job claimed twice';
             END IF;
-          END $;
+          END $$;
           ROLLBACK;
           SQL
           test "$(psql_db -Atc 'SELECT count(*) FROM jobs WHERE lease_token IS NULL')" = 1
