@@ -1,6 +1,6 @@
 # Compute Job Ledger
 
-A local compute scheduler for answering who submitted a job, which worker ran it, and whether its recorded history still verifies. The CLI runs deterministic workloads and persists retry-safe job submissions to PostgreSQL. PostgreSQL binds each submission to its authenticated caller and records the decision. Workers can claim queued jobs using a database-issued lease.
+A local compute scheduler for answering who submitted a job, which worker ran it, and whether its recorded history still verifies. The CLI runs deterministic workloads and persists retry-safe job submissions to PostgreSQL. PostgreSQL binds each submission to its authenticated caller and records the decision. Workers can claim queued jobs, renew a live lease and reclaim work after a lease expires.
 
 ## First workload
 
@@ -16,6 +16,8 @@ docker compose exec -T db psql -X -U ledger -d ledger < db/migrations/001_jobs.s
 docker compose exec -T db psql -X -U ledger -d ledger -c '\d public.jobs'
 docker compose exec -T db psql -X -U ledger -d ledger < db/migrations/002_callers.sql
 docker compose exec -T db psql -X -U ledger -d ledger < db/migrations/003_claim.sql
+docker compose exec -T db psql -X -U ledger -d ledger < db/migrations/004_reclaim.sql
+docker compose exec -T db psql -X -U ledger -d ledger < db/migrations/005_renew.sql
 ```
 
 The named volume retains data between restarts. The migration records its version in the same transaction that creates the jobs table. Running it again preserves existing rows. CI applies it twice against a fresh service and checks that invalid trial counts and duplicate request IDs are rejected.
@@ -52,17 +54,25 @@ The input digest is SHA-256 of the ASCII text `risk/v1\n<seed>\n<trials>\n`, wit
 
 ## Claim a job
 
-Apply migration 003 as the database administrator. Provision a dedicated worker login in the same administrator psql session used for caller setup:
+Apply migrations 001 through 005 in order as the database administrator. Provision a dedicated worker login in the same administrator psql session used for caller setup:
 
 ```sql
 CREATE ROLE worker_a LOGIN;
 \password worker_a
-GRANT EXECUTE ON FUNCTION public.claim_job() TO worker_a;
+GRANT EXECUTE ON FUNCTION public.claim_job(), public.renew_lease(bigint,uuid) TO worker_a;
 ```
 
 Set `LEDGER_DATABASE_URL` to the worker's connection string and run `./ledger claim`. It prints the job ID, risk inputs, lease token and expiration as JSON. An empty poll prints `null` and exits successfully. A login lacking the function grant exits with status 4.
 
-PostgreSQL locks the lowest-ID available row, skips rows locked by other transactions, and writes the worker login, token and 60-second expiration together. The database clock sets the deadline. If the transaction rolls back, the job becomes available again. A committed claim stays assigned in this milestone; expired-lease recovery and stale-token checks are milestone 5.
+PostgreSQL locks the lowest-ID available row, skips rows locked by other transactions, and writes the worker login, token and 60-second expiration together. The database clock sets the deadline. If the transaction rolls back, the job becomes available again. After expiration, the next successful claim of that job issues a fresh token, even when the same login reclaims it.
+
+To renew, connect with `psql "$LEDGER_DATABASE_URL"` as the worker that claimed the job. Set the psql variables `job_id` and `lease_token` to the values from the claim response, then run:
+
+```sql
+SELECT public.renew_lease(:job_id, :'lease_token');
+```
+
+A timestamp acknowledges renewal for another 60 seconds from the database check. A SQL `NULL` means the worker has lost the lease or supplied an incorrect job ID or token. Stop work on that attempt. A worker whose lease has expired must claim again.
 
 ## Week-one milestones
 
@@ -72,7 +82,7 @@ Implement these in dependency order, keeping each change and its focused tests t
 2. **Complete.** Persist submissions with stable input hashes and idempotent request IDs.
 3. **Complete.** Bind a local caller credential to a role. Record both authorized submissions and denials.
 4. **Complete.** Claim a queued job transactionally with a worker lease.
-5. Reclaim expired leases and reject stale worker tokens.
+5. **Complete.** Reclaim expired leases and reject stale worker tokens.
 6. Execute the risk workload in a worker and record attempt identity.
 7. Accept exactly one result transactionally across retries and competing completions.
 8. Reproduce a worker crash after durable result acceptance but before acknowledgement.
