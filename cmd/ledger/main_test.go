@@ -28,3 +28,17 @@ func TestInvalidArguments(t *testing.T) {
 		}
 	}
 }
+
+func TestClaimArguments(t *testing.T) {
+	t.Setenv("LEDGER_DATABASE_URL", "")
+	for _, tc := range []struct {
+		args []string
+		want int
+	}{
+		{[]string{"claim", "-h"}, 0}, {[]string{"claim", "unexpected"}, 2}, {[]string{"claim"}, 2},
+	} {
+		if got := run(tc.args, io.Discard, io.Discard); got != tc.want {
+			t.Errorf("%v: got %d, want %d", tc.args, got, tc.want)
+		}
+	}
+}

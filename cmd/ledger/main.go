@@ -11,11 +11,14 @@ import (
 )
 
 func run(args []string, out, diagnostics io.Writer) int {
+	if len(args) > 0 && args[0] == "claim" {
+		return claim(args[1:], out, diagnostics)
+	}
 	if len(args) > 0 && args[0] == "submit" {
 		return submit(args[1:], out, diagnostics)
 	}
 	if len(args) == 0 || args[0] != "risk" {
-		fmt.Fprintln(diagnostics, "usage: ledger risk|submit [flags]")
+		fmt.Fprintln(diagnostics, "usage: ledger risk|submit|claim [flags]")
 		return 2
 	}
 	flags := flag.NewFlagSet("risk", flag.ContinueOnError)

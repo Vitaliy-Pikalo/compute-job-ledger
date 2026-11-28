@@ -2,16 +2,13 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"github.com/Vitaliy-Pikalo/compute-job-ledger/internal/jobs"
 	"github.com/Vitaliy-Pikalo/compute-job-ledger/internal/risk"
-	_ "github.com/lib/pq"
 	"io"
-	"os"
 	"time"
 )
 
@@ -31,15 +28,9 @@ func submit(args []string, out, diagnostics io.Writer) int {
 		fmt.Fprintln(diagnostics, "submit requires -request-id and a valid trial count")
 		return 2
 	}
-	dsn := os.Getenv("LEDGER_DATABASE_URL")
-	if dsn == "" {
-		fmt.Fprintln(diagnostics, "set LEDGER_DATABASE_URL")
-		return 2
-	}
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		fmt.Fprintln(diagnostics, "invalid PostgreSQL configuration")
-		return 1
+	db, code := openDatabase(diagnostics)
+	if code != 0 {
+		return code
 	}
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
