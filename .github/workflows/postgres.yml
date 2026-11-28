@@ -44,6 +44,9 @@ jobs:
           test "$(psql_db -Atc "SELECT count(*) FROM jobs WHERE request_id='smoke' AND submitted_by IS NULL")" = 1
           psql_db < db/migrations/003_claim.sql
           psql_db < db/migrations/003_claim.sql
+          psql_db < db/migrations/004_reclaim.sql
+          psql_db < db/migrations/004_reclaim.sql
+          psql_db < db/tests/reclaim.sql
           psql_db <<'SQL'
           BEGIN;
           DO $$
