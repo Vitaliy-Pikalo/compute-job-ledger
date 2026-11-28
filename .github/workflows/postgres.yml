@@ -42,6 +42,25 @@ jobs:
           psql_db < db/migrations/002_callers.sql
           psql_db < db/migrations/002_callers.sql
           test "$(psql_db -Atc "SELECT count(*) FROM jobs WHERE request_id='smoke' AND submitted_by IS NULL")" = 1
+          psql_db < db/migrations/003_claim.sql
+          psql_db < db/migrations/003_claim.sql
+          psql_db <<'SQL'
+          BEGIN;
+          DO $
+          DECLARE claimed record;
+          BEGIN
+            SELECT * INTO STRICT claimed FROM public.claim_job();
+            IF claimed.seed <> 42 OR claimed.trials <> 1000 OR claimed.token IS NULL
+                OR claimed.expires_at <= clock_timestamp() THEN
+              RAISE EXCEPTION 'invalid lease for migrated job';
+            END IF;
+            IF EXISTS (SELECT FROM public.claim_job()) THEN
+              RAISE EXCEPTION 'same job claimed twice';
+            END IF;
+          END $;
+          ROLLBACK;
+          SQL
+          test "$(psql_db -Atc 'SELECT count(*) FROM jobs WHERE lease_token IS NULL')" = 1
           for login in researcher viewer; do
             password=$(openssl rand -hex 32)
             echo "::add-mask::$password"
