@@ -46,6 +46,9 @@ jobs:
           psql_db < db/migrations/003_claim.sql
           psql_db < db/migrations/004_reclaim.sql
           psql_db < db/migrations/004_reclaim.sql
+          psql_db < db/migrations/005_renew.sql
+          psql_db < db/migrations/005_renew.sql
+          psql_db < db/tests/renew.sql
           psql_db < db/tests/reclaim.sql
           psql_db <<'SQL'
           BEGIN;
